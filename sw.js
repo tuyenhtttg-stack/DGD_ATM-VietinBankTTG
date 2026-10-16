@@ -1,5 +1,5 @@
 /* Service worker: chạy offline + tăng tốc. Đổi VERSION mỗi lần sửa code để người dùng nhận bản mới. */
-const VERSION = 'atm-v1.0.0';
+const VERSION = 'atm-v1.1.0';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'lib.js', 'config.js', 'manifest.webmanifest',
   'vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'vendor/qrcode.js',
   'assets/logo.png', 'icons/icon-192.png', 'icons/favicon.png', 'data/atm.csv', 'data/pgd.csv'];

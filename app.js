@@ -79,11 +79,15 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 const layer = L.layerGroup().addTo(map);
 let meMarker = null, meCircle = null;
 
-function pinIcon(it, near, sel){
-  const cls = ['pin', it.kind === 'pgd' ? 'pgd' : (it.active ? '' : 'off'), it.type === 'CDM' ? 'cdm' : '', near ? 'near' : '', sel ? 'sel' : ''].join(' ');
-  return L.divIcon({ className: 'pin-wrap', html: `<div class="${cls}">${it.kind === 'pgd' ? I.pgd : I.atm}</div>`,
+function pinIcon(it, near, sel, count = 1){
+  const cls = ['pin', it.kind === 'pgd' ? 'pgd' : (it.active ? '' : 'off'), it.type === 'CDM' && count < 2 ? 'cdm' : '', near ? 'near' : '', sel ? 'sel' : ''].join(' ');
+  const badge = count > 1 ? `<span class="pin-cnt" title="${count} máy tại cùng vị trí">${count}</span>` : '';
+  return L.divIcon({ className: 'pin-wrap', html: `<div class="pin-box"><div class="${cls}">${it.kind === 'pgd' ? I.pgd : I.atm}</div>${badge}</div>`,
     iconSize: [36, 36], iconAnchor: [18, 40] });
 }
+// Các điểm cách nhau dưới 30 m được xem là cùng vị trí (VD: 2 máy tại 1 PGD)
+const SAME_SPOT_M = 30;
+const sameSpot = (a, b) => haversine(a, b) < SAME_SPOT_M;
 const isDesk = () => matchMedia('(min-width:900px)').matches;
 function pads(){
   const tb = $('#topbar').getBoundingClientRect();
@@ -177,7 +181,9 @@ function tagsHTML(it, d, near){
   return t.join('');
 }
 function footHTML(){
-  const when = S.loadedAt ? `Dữ liệu cập nhật lúc ${fmtDateTime(S.loadedAt)}${S.fromCache ? ' (bản lưu khi mất mạng)' : ''}` : '';
+  const note = S.source === 'cache' ? ' (bản lưu trên máy – chưa kết nối được máy chủ dữ liệu)'
+    : S.source === 'fallback' && CFG.ATM_CSV_URL ? ' (dữ liệu dự phòng)' : '';
+  const when = S.loadedAt ? `Dữ liệu cập nhật lúc ${fmtDateTime(S.loadedAt)}${note}` : '';
   const tel = s => s.replace(/[^\d+]/g, '');
   return `<div class="foot">
     ${when ? `<div>${when}</div>` : ''}
@@ -248,18 +254,37 @@ function renderList(){
 }
 function renderMarkers(list, near){
   layer.clearLayers();
+  // Gộp các máy cùng vị trí thành 1 ghim có số lượng
+  const groups = [];
   for (const { it } of list){
-    const m = L.marker([it.lat, it.lng], {
-      icon: pinIcon(it, near && near.it === it, S.sel === it),
-      zIndexOffset: S.sel === it ? 1000 : (near && near.it === it) ? 500 : it.active ? 100 : 0,
-      title: it.name, keyboard: true
+    const g = groups.find(g => sameSpot(g[0], it));
+    g ? g.push(it) : groups.push([it]);
+  }
+  for (const g of groups){
+    const nearIt = near && g.includes(near.it) ? near.it : null;
+    const lead = g.includes(S.sel) ? S.sel : nearIt || g.find(x => x.active) || g[0];
+    const m = L.marker([lead.lat, lead.lng], {
+      icon: pinIcon(lead, !!nearIt, g.includes(S.sel), g.length),
+      zIndexOffset: g.includes(S.sel) ? 1000 : nearIt ? 500 : lead.active ? 100 : 0,
+      title: g.length > 1 ? `${lead.name} (${g.length} máy)` : lead.name, keyboard: true
     });
-    m.on('click', () => openDetail(it));
+    m.on('click', () => openDetail(lead));
     layer.addLayer(m);
   }
 }
 
 /* ---------- Chi tiết ---------- */
+// Các máy khác đặt cùng vị trí: cho phép chuyển nhanh giữa các máy
+function sameHTML(it){
+  const g = S[it.kind].filter(x => sameSpot(x, it));
+  if (g.length < 2) return '';
+  return `<div class="same">
+    <div class="same-t">${it.kind === 'pgd' ? 'Cùng vị trí' : `Tại điểm này có ${g.length} máy`}</div>
+    <div class="same-list">${g.map(x => `<button class="same-i${x === it ? ' on' : ''}" data-swap="${esc(x.kind)}|${esc(x.id)}">
+      <b>${esc(x.kind === 'atm' ? (x.type === 'CDM' ? 'CDM · Nạp tiền' : 'ATM') : x.type)}</b><span>${esc(x.code || x.name)}</span>
+      <i class="${x.active ? 'ok' : 'bad'}"></i></button>`).join('')}</div>
+  </div>`;
+}
 function openDetail(it, push = true){
   S.sel = it;
   const d = S.me ? haversine(S.me, it) : null;
@@ -277,6 +302,7 @@ function openDetail(it, push = true){
     <div class="d-tags">${tagsHTML(it, null, false)}</div>
     <h2 class="d-name">${esc(it.name)}</h2>
     ${it.code && it.code !== it.name ? `<div class="d-code">Mã điểm: ${esc(it.code)}</div>` : ''}
+    ${sameHTML(it)}
     <div class="d-actions">
       <a class="btn btn-primary btn-block" href="${dirUrl(it)}" target="_blank" rel="noopener">${I.nav}Chỉ đường${d != null ? ` · ${fmtDist(d)}` : ''}</a>
     </div>
@@ -365,7 +391,7 @@ function locate(manual){
     fab.classList.remove('loading'); fab.classList.add('active');
     setMe(p); S.loc = 'ok';
     if ($('#detailView').hidden) renderList();
-    if (manual || S.firstFix) fitMeNearest();
+    if (manual) fitMeNearest(); else if (S.firstFix && $('#detailView').hidden) fitAll();
     S.firstFix = false;
     if (watchId == null) watchId = navigator.geolocation.watchPosition(q => {
       const moved = haversine(S.me, { lat: q.coords.latitude, lng: q.coords.longitude });
@@ -377,6 +403,13 @@ function locate(manual){
     if ($('#detailView').hidden) renderList();
     if (manual) toast(err.code === 1 ? 'Bạn chưa cho phép truy cập vị trí' : 'Không xác định được vị trí, vui lòng thử lại');
   }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
+}
+// Hiện toàn bộ điểm của tab hiện tại (kèm vị trí khách nếu ở gần địa bàn)
+function fitAll(){
+  const list = visible(), pts = list.map(x => x.it);
+  if (!pts.length){ if (S.me) map.flyTo([S.me.lat, S.me.lng], 13); return; }
+  if (S.me && list[0].d != null && list[0].d < 60000) pts.push(S.me);
+  fitItems(pts, 15);
 }
 function fitMeNearest(){
   if (!S.me) return;
@@ -391,6 +424,13 @@ document.addEventListener('click', e => {
   if (o && !e.target.closest('a')){
     const [k, id] = o.dataset.open.split('|');
     const it = S[k].find(x => x.id === id); if (it) openDetail(it);
+    return;
+  }
+  const sw = e.target.closest('[data-swap]');
+  if (sw){
+    const [k, id] = sw.dataset.swap.split('|');
+    const it = S[k].find(x => x.id === id);
+    if (it && it !== S.sel){ history.replaceState(history.state, '', `?${k}=${encodeURIComponent(id)}`); openDetail(it, false); }
     return;
   }
   const a = e.target.closest('[data-act]'); if (!a) return;
@@ -417,7 +457,7 @@ document.querySelectorAll('.seg [data-tab]').forEach(b => b.addEventListener('cl
   document.querySelectorAll('.chip').forEach(c => c.hidden = S.tab !== 'atm');
   closeDetail(); renderList();
   const list = visible().map(x => x.it);
-  if (S.me && list.length) fitMeNearest(); else fitItems(list);
+  fitAll();
 }));
 document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => {
   const k = c.dataset.filter; S.f[k] = !S.f[k]; c.setAttribute('aria-pressed', S.f[k]);
@@ -432,7 +472,7 @@ async function refresh(initial){
   const [a, p] = await Promise.all([loadKind('atm'), loadKind('pgd')]);
   const selKey = S.sel && [S.sel.kind, S.sel.id];
   S.atm = a.items; S.pgd = p.items;
-  S.loadedAt = a.t; S.fromCache = a.cache; S.failed = !!a.failed;
+  S.loadedAt = a.t; S.fromCache = a.cache; S.failed = !!a.failed; S.source = a.source;
   if (selKey){ const it = S[selKey[0]].find(x => x.id === selKey[1]); if (it) S.sel = it; }
   if ($('#detailView').hidden) renderList(); else if (S.sel) openDetail(S.sel, false);
   if (initial){

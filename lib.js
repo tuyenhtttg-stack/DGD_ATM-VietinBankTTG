@@ -81,19 +81,25 @@ async function loadKind(kind){
   const url = kind === 'atm' ? CFG.ATM_CSV_URL : CFG.PGD_CSV_URL;
   const fb = kind === 'atm' ? CFG.FALLBACK_ATM : CFG.FALLBACK_PGD;
   const key = 'vtb-atm-cache-' + kind;
-  const sources = url ? [[url, true], [fb, true]] : [[fb, true]];
-  for (const [src, bust] of sources){
+  // 1) Google Sheets (dữ liệu chính)
+  if (url){
     try {
-      const text = await fetchText(src, bust);
+      const text = await fetchText(url, true);
+      if (/<html/i.test(text.slice(0, 500))) throw new Error('Không phải CSV');
       const items = toItems(parseCSV(text), kind);
-      if (src === url && !items.length && /<html/i.test(text)) throw new Error('not csv');
       ls.set(key, { t: Date.now(), text });
-      return { items, t: Date.now(), cache: false };
-    } catch(e){ console.warn('Không tải được', src, e); }
+      return { items, t: Date.now(), cache: false, source: 'sheet' };
+    } catch(e){ console.warn('Không tải được Google Sheets', kind, e); }
+    // 2) Bản lưu lần trước trên máy (từ Google Sheets)
+    const c = ls.get(key);
+    if (c) return { items: toItems(parseCSV(c.text), kind), t: c.t, cache: true, source: 'cache' };
   }
-  const c = ls.get(key);
-  if (c) return { items: toItems(parseCSV(c.text), kind), t: c.t, cache: true };
-  return { items: [], t: null, cache: true, failed: true };
+  // 3) File dự phòng trong repo
+  try {
+    const text = await fetchText(fb, true);
+    return { items: toItems(parseCSV(text), kind), t: Date.now(), cache: !!url, source: 'fallback' };
+  } catch(e){ console.warn('Không tải được file dự phòng', kind, e); }
+  return { items: [], t: null, cache: true, failed: true, source: 'none' };
 }
 
 window.VTB = { norm, ls, parseCSV, toItems, loadKind };
